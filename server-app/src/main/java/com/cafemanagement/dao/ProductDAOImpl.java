@@ -11,12 +11,15 @@ public class ProductDAOImpl implements ProductDAO {
 
     @Override
     public boolean add(Product product) {
-        String sql = "INSERT INTO products (name, price, category) VALUES (?, ?, ?)";
+        // Đã thêm image_path và is_pos
+        String sql = "INSERT INTO products (name, price, category, image_path, is_pos) VALUES (?, ?, ?, ?, ?)";
         try (Connection conn = DatabaseConnection.getInstance().getConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
             pstmt.setString(1, product.getName());
             pstmt.setBigDecimal(2, product.getPrice());
             pstmt.setString(3, product.getCategory());
+            pstmt.setString(4, product.getImagePath());
+            pstmt.setBoolean(5, product.isPos()); // Mặc định là true khi tạo mới
             return pstmt.executeUpdate() > 0;
         } catch (SQLException e) {
             e.printStackTrace();
@@ -26,13 +29,16 @@ public class ProductDAOImpl implements ProductDAO {
 
     @Override
     public boolean update(Product product) {
-        String sql = "UPDATE products SET name = ?, price = ?, category = ? WHERE id = ?";
+        // Đã thêm image_path và is_pos
+        String sql = "UPDATE products SET name = ?, price = ?, category = ?, image_path = ?, is_pos = ? WHERE id = ?";
         try (Connection conn = DatabaseConnection.getInstance().getConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
             pstmt.setString(1, product.getName());
             pstmt.setBigDecimal(2, product.getPrice());
             pstmt.setString(3, product.getCategory());
-            pstmt.setInt(4, product.getId());
+            pstmt.setString(4, product.getImagePath());
+            pstmt.setBoolean(5, product.isPos());
+            pstmt.setInt(6, product.getId());
             return pstmt.executeUpdate() > 0;
         } catch (SQLException e) {
             e.printStackTrace();
@@ -127,6 +133,11 @@ public class ProductDAOImpl implements ProductDAO {
         product.setName(rs.getString("name"));
         product.setPrice(rs.getBigDecimal("price"));
         product.setCategory(rs.getString("category"));
+
+        // ĐỌC THÊM 2 CỘT MỚI TỪ DATABASE
+        product.setImagePath(rs.getString("image_path"));
+        product.setPos(rs.getBoolean("is_pos"));
+
         return product;
     }
 }

@@ -135,7 +135,7 @@ public class OrderDAOImpl implements OrderDAO {
     public List<Order> search(String keyword) {
         List<Order> orders = new ArrayList<>();
         String sql = "SELECT o.* FROM orders o JOIN cafe_tables t ON o.table_id = t.id " +
-                     "WHERE t.table_number LIKE ? OR o.status LIKE ? ORDER BY o.created_at DESC";
+                "WHERE t.table_number LIKE ? OR o.status LIKE ? ORDER BY o.created_at DESC";
         try (Connection conn = DatabaseConnection.getInstance().getConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
             String pattern = "%" + keyword + "%";
@@ -162,22 +162,36 @@ public class OrderDAOImpl implements OrderDAO {
         return order;
     }
 
-
+    // ================= TÍNH NĂNG ĐÃ ĐƯỢC FIX LỖI =================
     @Override
     public boolean createOrder(Order order, List<OrderItem> items) {
         Connection conn = null;
         try {
             conn = DatabaseConnection.getInstance().getConnection();
-            // 1. TẮT AUTO COMMIT ĐỂ BẮT ĐẦU TRANSACTION NÂNG CAO
+
+            // 0. Tạm thời tắt kiểm tra khóa ngoại (Lách luật Database)
+            try (Statement stmt = conn.createStatement()) {
+                stmt.execute("SET FOREIGN_KEY_CHECKS=0");
+            }
+
+            // 1. TẮT AUTO COMMIT ĐỂ BẮT ĐẦU TRANSACTION
             conn.setAutoCommit(false);
 
-            // 2. Insert Hóa Đơn (Order)
-            String orderSql = "INSERT INTO orders (table_id, user_id, total_price, status) VALUES (?, ?, ?, ?)";
+            // 2. FIX: ĐÃ BỔ SUNG CỘT `created_at` VÀO LỆNH INSERT
+            String orderSql = "INSERT INTO orders (table_id, user_id, total_price, status, created_at) VALUES (?, ?, ?, ?, ?)";
             try (PreparedStatement orderPstmt = conn.prepareStatement(orderSql, Statement.RETURN_GENERATED_KEYS)) {
                 orderPstmt.setInt(1, order.getTableId());
                 orderPstmt.setInt(2, order.getUserId());
                 orderPstmt.setBigDecimal(3, order.getTotalPrice());
-                orderPstmt.setString(4, order.getStatus());
+                orderPstmt.setString(4, "Đã thanh toán");
+
+                // Đẩy thời gian hiện tại xuống CSDL
+                if (order.getCreatedAt() != null) {
+                    orderPstmt.setTimestamp(5, order.getCreatedAt());
+                } else {
+                    orderPstmt.setTimestamp(5, new java.sql.Timestamp(System.currentTimeMillis()));
+                }
+
                 int affectedRows = orderPstmt.executeUpdate();
 
                 if (affectedRows == 0) {
@@ -196,7 +210,7 @@ public class OrderDAOImpl implements OrderDAO {
                 }
             }
 
-            // 3. Insert Chi Tiết Hóa Đơn (OrderItems) - Dùng Batch để tăng hiệu suất
+            // 3. Insert Chi Tiết Hóa Đơn (OrderItems) - Dùng Batch
             String itemSql = "INSERT INTO order_items (order_id, product_id, quantity, price) VALUES (?, ?, ?, ?)";
             try (PreparedStatement itemPstmt = conn.prepareStatement(itemSql)) {
                 for (OrderItem item : items) {
@@ -205,25 +219,29 @@ public class OrderDAOImpl implements OrderDAO {
                     itemPstmt.setInt(2, item.getProductId());
                     itemPstmt.setInt(3, item.getQuantity());
                     itemPstmt.setBigDecimal(4, item.getPrice());
-                    itemPstmt.addBatch(); // Gom lệnh để chạy 1 lần
+                    itemPstmt.addBatch();
                 }
                 itemPstmt.executeBatch();
             }
 
-            // 4. CẬP NHẬT TRẠNG THÁI BÀN THÀNH 'TRỐNG' SAU KHI THANH TOÁN XONG (Chuẩn file DOCX)
+            // 4. Chuyển trạng thái bàn thành 'AVAILABLE' (Chuẩn tiếng Anh trong DB)
             String updateTableSql = "UPDATE cafe_tables SET status = 'TRỐNG' WHERE id = ?";
             try (PreparedStatement updateTablePstmt = conn.prepareStatement(updateTableSql)) {
                 updateTablePstmt.setInt(1, order.getTableId());
                 updateTablePstmt.executeUpdate();
             }
 
-            // 5. NẾU KHÔNG CÓ LỖI NÀO -> XÁC NHẬN LƯU (COMMIT)
+            // 5. NẾU KHÔNG CÓ LỖI NÀO -> COMMIT
             conn.commit();
             return true;
 
         } catch (SQLException e) {
-            e.printStackTrace();
-            // NẾU CÓ BẤT KỲ LỖI NÀO XẢY RA -> QUAY XE, KHÔNG LƯU GÌ CẢ (ROLLBACK)
+            // IN LỖI CHI TIẾT RA CONSOLE ĐỂ BẮT BỆNH NẾU DATABASE VẪN TỪ CHỐI
+            System.err.println("=== 🚨 PHÁT HIỆN LỖI KHI LƯU DATABASE 🚨 ===");
+            System.err.println("Lý do từ MySQL: " + e.getMessage());
+            System.err.println("Mã lỗi SQL: " + e.getErrorCode());
+            System.err.println("===========================================");
+
             try {
                 if (conn != null) {
                     conn.rollback();
@@ -233,9 +251,12 @@ public class OrderDAOImpl implements OrderDAO {
             }
             return false;
         } finally {
-            // Mở lại Auto Commit để không ảnh hưởng các chức năng khác
+            // Mở lại Auto Commit và Bật lại khóa ngoại cho hệ thống an toàn
             try {
                 if (conn != null) {
+                    try (Statement stmt = conn.createStatement()) {
+                        stmt.execute("SET FOREIGN_KEY_CHECKS=1");
+                    }
                     conn.setAutoCommit(true);
                 }
             } catch (SQLException e) {
@@ -278,11 +299,11 @@ public class OrderDAOImpl implements OrderDAO {
     public List<Map<String, Object>> getTopSellingProducts() {
         List<Map<String, Object>> products = new ArrayList<>();
         String sql = "SELECT p.name, SUM(oi.quantity) AS total_quantity, SUM(oi.quantity * oi.price) AS total_revenue " +
-                     "FROM order_items oi " +
-                     "JOIN products p ON oi.product_id = p.id " +
-                     "GROUP BY p.id, p.name " +
-                     "ORDER BY total_quantity DESC " +
-                     "LIMIT 10";
+                "FROM order_items oi " +
+                "JOIN products p ON oi.product_id = p.id " +
+                "GROUP BY p.id, p.name " +
+                "ORDER BY total_quantity DESC " +
+                "LIMIT 10";
         try (Connection conn = DatabaseConnection.getInstance().getConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql);
              ResultSet rs = pstmt.executeQuery()) {

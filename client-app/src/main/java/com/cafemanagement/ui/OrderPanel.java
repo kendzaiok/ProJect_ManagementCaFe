@@ -14,6 +14,8 @@ import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
+import java.awt.image.BufferedImage;
+import java.io.File;
 import java.math.BigDecimal;
 import java.sql.Timestamp;
 import java.text.SimpleDateFormat;
@@ -29,20 +31,25 @@ public class OrderPanel extends JPanel {
     private JPanel tablePanel;
     private JPanel takeawayPanel;
     private DefaultListModel<String> takeawayListModel;
-    private List<CafeTable> listTables = new ArrayList<>(); // Lưu danh sách bàn
-    private JButton currentSelectedTableBtn = null; // Theo dõi nút bàn đang chọn
+    private JList<String> listTakeaway;
+    private int takeawayCounter = 1;
+    private List<CafeTable> listTables = new ArrayList<>();
 
     // Cột 2: Sản phẩm
     private JPanel productPanel;
     private JTextField txtSearch;
-    private List<Product> allProducts = new ArrayList<>(); // Bộ nhớ đệm cho Live Search
+    private List<Product> allProducts = new ArrayList<>();
 
     // Cột 3: Giỏ hàng
     private JTable cartTable;
     private DefaultTableModel cartTableModel;
     private JLabel lblTotalAmount;
     private JLabel lblHeader;
+
+    // BIẾN QUẢN LÝ TRẠNG THÁI (ĐỂ KHÓA GIỎ HÀNG)
     private int currentSelectedTableId = -1;
+    private String currentSelectedTakeaway = null;
+    private boolean isUpdatingSelection = false;
 
     // Màu sắc chuẩn POS
     private final Color COLOR_PRIMARY = Color.decode("#2C3E50");
@@ -64,12 +71,29 @@ public class OrderPanel extends JPanel {
         loadProductsFromServer();
     }
 
-    // ================= 1. CỘT TRÁI: BÀN =================
+    // ================= HÀM KHÓA GIỎ HÀNG =================
+    private boolean checkAndConfirmSwitch() {
+        if (cartTableModel.getRowCount() > 0) {
+            int choice = JOptionPane.showConfirmDialog(this,
+                    "Giỏ hàng đang có món chưa thanh toán.\nNếu chọn bàn/đơn khác, giỏ hàng hiện tại sẽ bị xóa.\nBạn có muốn tiếp tục?",
+                    "Xác nhận chuyển",
+                    JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+            if (choice == JOptionPane.YES_OPTION) {
+                cartTableModel.setRowCount(0);
+                updateTotalAmount();
+                return true;
+            } else {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // ================= 1. CỘT TRÁI: BÀN & MANG ĐI =================
     private void initTableColumn() {
         JTabbedPane tabbedPane = new JTabbedPane();
         tabbedPane.setFont(new Font("Arial", Font.BOLD, 14));
 
-        // KHẮC PHỤC LỖI NÚT KHỔNG LỒ: Dùng JPanel bọc BorderLayout.NORTH
         tablePanel = new JPanel(new GridLayout(0, 2, 10, 10));
         tablePanel.setBackground(Color.WHITE);
         JPanel tableWrapper = new JPanel(new BorderLayout());
@@ -81,7 +105,6 @@ public class OrderPanel extends JPanel {
         scrollTable.setBorder(BorderFactory.createLineBorder(COLOR_PRIMARY, 1));
         scrollTable.getVerticalScrollBar().setUnitIncrement(16);
 
-        // Tab Mang Đi
         takeawayPanel = new JPanel(new BorderLayout(10, 10));
         takeawayPanel.setBorder(new EmptyBorder(10, 10, 10, 10));
         takeawayPanel.setBackground(Color.WHITE);
@@ -90,9 +113,43 @@ public class OrderPanel extends JPanel {
         btnTaoDonMoi.setBackground(COLOR_ORANGE);
         btnTaoDonMoi.setForeground(Color.WHITE);
         btnTaoDonMoi.setFont(new Font("Arial", Font.BOLD, 14));
+        btnTaoDonMoi.setFocusPainted(false);
+        btnTaoDonMoi.setPreferredSize(new Dimension(100, 40));
+
+        btnTaoDonMoi.addActionListener(e -> createNewTakeawayOrder());
 
         takeawayListModel = new DefaultListModel<>();
-        JList<String> listTakeaway = new JList<>(takeawayListModel);
+        listTakeaway = new JList<>(takeawayListModel);
+        listTakeaway.setFont(new Font("Arial", Font.BOLD, 14));
+        listTakeaway.setSelectionBackground(COLOR_ORANGE);
+        listTakeaway.setSelectionForeground(Color.WHITE);
+
+        listTakeaway.addListSelectionListener(e -> {
+            if (e.getValueIsAdjusting() || isUpdatingSelection) return;
+
+            int selectedIdx = listTakeaway.getSelectedIndex();
+            if (selectedIdx == -1) return;
+
+            String selectedOrder = listTakeaway.getSelectedValue();
+            if (selectedOrder.equals(currentSelectedTakeaway)) return;
+
+            if (!checkAndConfirmSwitch()) {
+                isUpdatingSelection = true;
+                if (currentSelectedTakeaway != null) {
+                    listTakeaway.setSelectedValue(currentSelectedTakeaway, true);
+                } else {
+                    listTakeaway.clearSelection();
+                }
+                isUpdatingSelection = false;
+                return;
+            }
+
+            currentSelectedTableId = 0;
+            currentSelectedTakeaway = selectedOrder;
+            lblHeader.setText(selectedOrder.toUpperCase());
+            refreshTableUI();
+        });
+
         JScrollPane scrollTakeaway = new JScrollPane(listTakeaway);
         scrollTakeaway.setBorder(BorderFactory.createTitledBorder("Đang lên món"));
 
@@ -105,12 +162,22 @@ public class OrderPanel extends JPanel {
         add(tabbedPane);
     }
 
-    // ================= 2. CỘT GIỮA: THỰC ĐƠN & TÌM KIẾM =================
+    private void createNewTakeawayOrder() {
+        if (!checkAndConfirmSwitch()) return;
+
+        String customerName = JOptionPane.showInputDialog(this, "Nhập tên khách hàng (Ghi chú):", "Tạo Đơn Mang Đi", JOptionPane.PLAIN_MESSAGE);
+        if (customerName != null && !customerName.trim().isEmpty()) {
+            String orderTitle = "Đơn #" + String.format("%02d", takeawayCounter++) + " - " + customerName.trim();
+            takeawayListModel.addElement(orderTitle);
+            listTakeaway.setSelectedIndex(takeawayListModel.getSize() - 1);
+        }
+    }
+
+    // ================= 2. CỘT GIỮA: THỰC ĐƠN ĐÃ CẢI TIẾN UI =================
     private void initProductColumn() {
         JPanel centerPanel = new JPanel(new BorderLayout(0, 10));
         centerPanel.setBackground(Color.WHITE);
 
-        // Thanh tìm kiếm
         JPanel searchPanel = new JPanel(new BorderLayout(5, 0));
         searchPanel.setBackground(Color.WHITE);
         searchPanel.add(new JLabel(" TÌM MÓN: "), BorderLayout.WEST);
@@ -119,7 +186,6 @@ public class OrderPanel extends JPanel {
         txtSearch.setFont(new Font("Arial", Font.PLAIN, 14));
         txtSearch.setPreferredSize(new Dimension(100, 35));
 
-        // CHỨC NĂNG LIVE SEARCH (Gõ chữ hiện món lập tức)
         txtSearch.getDocument().addDocumentListener(new DocumentListener() {
             public void insertUpdate(DocumentEvent e) { filterProducts(); }
             public void removeUpdate(DocumentEvent e) { filterProducts(); }
@@ -128,17 +194,17 @@ public class OrderPanel extends JPanel {
 
         searchPanel.add(txtSearch, BorderLayout.CENTER);
 
-        // Lưới sản phẩm chống kéo giãn
-        productPanel = new JPanel(new GridLayout(0, 2, 10, 10));
+        // Đổi thành GridLayout(0, 2) nhưng gài vào BorderLayout.NORTH để có thanh cuộn mượt và giữ nguyên kích thước
+        productPanel = new JPanel(new GridLayout(0, 2, 12, 12));
         productPanel.setBackground(Color.WHITE);
         JPanel productWrapper = new JPanel(new BorderLayout());
         productWrapper.setBackground(Color.WHITE);
         productWrapper.setBorder(new EmptyBorder(10, 10, 10, 10));
-        productWrapper.add(productPanel, BorderLayout.NORTH);
+        productWrapper.add(productPanel, BorderLayout.NORTH); // Phép màu chống "co rúm" nằm ở đây
 
         JScrollPane scrollPane = new JScrollPane(productWrapper);
         scrollPane.setBorder(BorderFactory.createLineBorder(Color.LIGHT_GRAY));
-        scrollPane.getVerticalScrollBar().setUnitIncrement(16);
+        scrollPane.getVerticalScrollBar().setUnitIncrement(20); // Lăn chuột nhanh hơn
 
         centerPanel.add(searchPanel, BorderLayout.NORTH);
         centerPanel.add(scrollPane, BorderLayout.CENTER);
@@ -146,7 +212,98 @@ public class OrderPanel extends JPanel {
         add(centerPanel);
     }
 
-    // ================= 3. CỘT PHẢI: GIỎ HÀNG =================
+    private void filterProducts() {
+        String keyword = txtSearch.getText().toLowerCase().trim();
+        productPanel.removeAll();
+
+        for (Product p : allProducts) {
+            // FIX: NẾU KHÔNG ĐÁNH DẤU POS THÌ BỎ QUA KHÔNG HIỂN THỊ
+            if (!p.isPos()) continue;
+
+            if (p.getName().toLowerCase().contains(keyword)) {
+                // TẠO THẺ SẢN PHẨM MỚI CHUYÊN NGHIỆP HƠN
+                JButton btnProduct = new JButton();
+                btnProduct.setLayout(new BorderLayout());
+                btnProduct.setBackground(Color.WHITE);
+                btnProduct.setBorder(BorderFactory.createLineBorder(Color.LIGHT_GRAY, 1));
+                btnProduct.setPreferredSize(new Dimension(150, 180)); // Khóa cứng kích thước thẻ
+                btnProduct.setCursor(new Cursor(Cursor.HAND_CURSOR));
+
+                // 1. Load và hiển thị Ảnh
+                JLabel lblImg = new JLabel(getScaledImage(p.getImagePath(), 120, 100));
+                lblImg.setHorizontalAlignment(SwingConstants.CENTER);
+                lblImg.setBorder(new EmptyBorder(5, 5, 5, 5));
+
+                // 2. Định dạng Tên (cắt bớt nếu quá dài) và Giá
+                String name = p.getName();
+                if (name.length() > 20) name = name.substring(0, 17) + "...";
+
+                String textHtml = "<html><div style='text-align:center;'>"
+                        + "<b style='font-size:12px; color:#2C3E50;'>" + name + "</b><br>"
+                        + "<font style='font-size:14px; color:#E74C3C;'><b>" + p.getPrice().longValue() + "đ</b></font>"
+                        + "</div></html>";
+                JLabel lblText = new JLabel(textHtml);
+                lblText.setHorizontalAlignment(SwingConstants.CENTER);
+                lblText.setBorder(new EmptyBorder(0, 5, 5, 5));
+
+                // Ghép vào nút
+                btnProduct.add(lblImg, BorderLayout.CENTER);
+                btnProduct.add(lblText, BorderLayout.SOUTH);
+
+                // Hover chuột đổi màu nhẹ
+                btnProduct.addMouseListener(new java.awt.event.MouseAdapter() {
+                    public void mouseEntered(java.awt.event.MouseEvent evt) {
+                        btnProduct.setBackground(Color.decode("#F8F9FA"));
+                    }
+                    public void mouseExited(java.awt.event.MouseEvent evt) {
+                        btnProduct.setBackground(Color.WHITE);
+                    }
+                });
+
+                btnProduct.addActionListener(e -> addProductToCart(p));
+                productPanel.add(btnProduct);
+            }
+        }
+        productPanel.revalidate();
+        productPanel.repaint();
+    }
+
+    // ================= HÀM HỖ TRỢ XỬ LÝ ẢNH =================
+    private ImageIcon getScaledImage(String imagePath, int width, int height) {
+        try {
+            if (imagePath != null && !imagePath.trim().isEmpty()) {
+                File imgFile = new File(imagePath);
+                if (imgFile.exists()) {
+                    ImageIcon icon = new ImageIcon(imagePath);
+                    Image img = icon.getImage().getScaledInstance(width, height, Image.SCALE_SMOOTH);
+                    return new ImageIcon(img);
+                }
+            }
+        } catch (Exception e) {
+            // Bỏ qua và trả về ảnh mặc định
+        }
+        return createDefaultIcon(width, height);
+    }
+
+    private ImageIcon createDefaultIcon(int width, int height) {
+        BufferedImage img = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g2d = img.createGraphics();
+        g2d.setColor(Color.decode("#ECF0F1")); // Màu nền xám nhạt
+        g2d.fillRect(0, 0, width, height);
+        g2d.setColor(Color.GRAY);
+        g2d.setFont(new Font("Arial", Font.BOLD, 12));
+
+        FontMetrics fm = g2d.getFontMetrics();
+        String text = "NO IMAGE";
+        int x = (width - fm.stringWidth(text)) / 2;
+        int y = (height - fm.getHeight()) / 2 + fm.getAscent();
+
+        g2d.drawString(text, x, y);
+        g2d.dispose();
+        return new ImageIcon(img);
+    }
+
+    // ================= 3. CỘT PHẢI: GIỎ HÀNG (GIỮ NGUYÊN) =================
     private void initCartColumn() {
         JPanel rightPanel = new JPanel(new BorderLayout(0, 10));
         rightPanel.setBackground(Color.WHITE);
@@ -161,7 +318,7 @@ public class OrderPanel extends JPanel {
         String[] columns = {"ID", "Tên món", "SL", "Tiền", "Ghi chú"};
         cartTableModel = new DefaultTableModel(columns, 0) {
             @Override
-            public boolean isCellEditable(int row, int column) { return false; } // Khóa không cho sửa trực tiếp trên bảng
+            public boolean isCellEditable(int row, int column) { return false; }
         };
         cartTable = new JTable(cartTableModel);
         cartTable.setFont(new Font("Arial", Font.PLAIN, 14));
@@ -199,7 +356,6 @@ public class OrderPanel extends JPanel {
         btnThanhToan.setForeground(Color.WHITE);
         btnThanhToan.setFont(new Font("Arial", Font.BOLD, 16));
 
-        // SỰ KIỆN NÚT BẤM
         btnGhiChu.addActionListener(e -> addNoteToCartItem());
         btnInBill.addActionListener(e -> showTemporaryBillOnScreen());
         btnThanhToan.addActionListener(e -> processCheckout());
@@ -216,7 +372,7 @@ public class OrderPanel extends JPanel {
         add(rightPanel);
     }
 
-    // ================= XỬ LÝ LOGIC UI & SERVER =================
+    // ================= XỬ LÝ LOGIC UI & SERVER (GIỮ NGUYÊN) =================
 
     private void loadTablesFromServer() {
         try {
@@ -239,17 +395,28 @@ public class OrderPanel extends JPanel {
             btnTable.setForeground(Color.WHITE);
             btnTable.setPreferredSize(new Dimension(100, 100));
 
-            // Xanh lá là mặc định. Đỏ nếu đang chọn hoặc Database báo có khách
-            if (t.getId() == currentSelectedTableId || "OCCUPIED".equalsIgnoreCase(t.getStatus())) {
+            if (t.getId() == currentSelectedTableId) {
+                btnTable.setBackground(COLOR_ORANGE);
+            } else if ("OCCUPIED".equalsIgnoreCase(t.getStatus())) {
                 btnTable.setBackground(COLOR_RED);
             } else {
                 btnTable.setBackground(COLOR_GREEN);
             }
 
             btnTable.addActionListener(e -> {
+                if (currentSelectedTableId == t.getId()) return;
+
+                if (!checkAndConfirmSwitch()) return;
+
                 currentSelectedTableId = t.getId();
+                currentSelectedTakeaway = null;
                 lblHeader.setText(t.getName().toUpperCase());
-                refreshTableUI(); // Cập nhật lại màu toàn bộ bàn
+
+                isUpdatingSelection = true;
+                listTakeaway.clearSelection();
+                isUpdatingSelection = false;
+
+                refreshTableUI();
             });
             tablePanel.add(btnTable);
         }
@@ -263,60 +430,35 @@ public class OrderPanel extends JPanel {
             Response res = ClientConnection.getInstance().sendRequest(req);
             if (res.isSuccess()) {
                 allProducts = (List<Product>) res.getData();
-                filterProducts(); // Hiển thị sản phẩm lần đầu
+                filterProducts();
             }
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    // Logic Live Search (Tìm kiếm thời gian thực)
-    private void filterProducts() {
-        String keyword = txtSearch.getText().toLowerCase().trim();
-        productPanel.removeAll();
-
-        for (Product p : allProducts) {
-            if (p.getName().toLowerCase().contains(keyword)) {
-                String cardHtml = "<html><div style='text-align:center;'>"
-                        + "<b style='font-size:12px; color:#2C3E50;'>" + p.getName() + "</b><br>"
-                        + "<font style='font-size:14px; color:#E74C3C;'><b>" + p.getPrice().longValue() + "đ</b></font>"
-                        + "</div></html>";
-
-                JButton btnProduct = new JButton(cardHtml);
-                btnProduct.setBackground(Color.WHITE);
-                btnProduct.setBorder(BorderFactory.createLineBorder(Color.LIGHT_GRAY, 1));
-                btnProduct.setPreferredSize(new Dimension(130, 100)); // Cố định kích thước
-
-                btnProduct.addActionListener(e -> addProductToCart(p));
-                productPanel.add(btnProduct);
-            }
-        }
-        productPanel.revalidate();
-        productPanel.repaint();
-    }
-
-    // Logic Thêm món và CỘNG DỒN SỐ LƯỢNG
     private void addProductToCart(Product p) {
+        if (currentSelectedTableId == -1) {
+            JOptionPane.showMessageDialog(this, "Vui lòng chọn Bàn hoặc tạo Đơn Mang Đi trước khi thêm món!", "Hướng dẫn", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+
         boolean found = false;
-        // Quét xem món đã có trong giỏ chưa
         for (int i = 0; i < cartTableModel.getRowCount(); i++) {
             int existingId = (int) cartTableModel.getValueAt(i, 0);
             if (existingId == p.getId()) {
-                // Đã tồn tại -> Cộng dồn
                 int currentQty = (int) cartTableModel.getValueAt(i, 2);
                 cartTableModel.setValueAt(currentQty + 1, i, 2);
                 found = true;
                 break;
             }
         }
-        // Nếu chưa có thì thêm dòng mới
         if (!found) {
             cartTableModel.addRow(new Object[]{p.getId(), p.getName(), 1, p.getPrice(), ""});
         }
         updateTotalAmount();
     }
 
-    // Chức năng Thêm ghi chú
     private void addNoteToCartItem() {
         int selectedRow = cartTable.getSelectedRow();
         if (selectedRow == -1) {
@@ -342,14 +484,12 @@ public class OrderPanel extends JPanel {
         lblTotalAmount.setText("TỔNG TIỀN: " + (long)total + " VNĐ");
     }
 
-    // ================= XUẤT BILL TẠM LÊN MÀN HÌNH =================
     private void showTemporaryBillOnScreen() {
         if (currentSelectedTableId == -1 || cartTableModel.getRowCount() == 0) {
-            JOptionPane.showMessageDialog(this, "Vui lòng chọn bàn và thêm món trước khi in bill!", "Cảnh báo", JOptionPane.WARNING_MESSAGE);
+            JOptionPane.showMessageDialog(this, "Vui lòng chọn bàn/đơn và thêm món trước khi in bill!", "Cảnh báo", JOptionPane.WARNING_MESSAGE);
             return;
         }
 
-        // Tạo nội dung Bill Text
         StringBuilder billText = new StringBuilder();
         billText.append("================================================\n");
         billText.append("                 CAFE ÔNG GIÁO\n");
@@ -357,7 +497,13 @@ public class OrderPanel extends JPanel {
         billText.append("          SĐT: 0987.654.321\n");
         billText.append("================================================\n");
         billText.append("               HÓA ĐƠN TẠM TÍNH\n");
-        billText.append("Bàn số: ").append(currentSelectedTableId).append("\n");
+
+        if (currentSelectedTableId == 0) {
+            billText.append("Khách: ").append(currentSelectedTakeaway).append("\n");
+        } else {
+            billText.append("Bàn số: ").append(currentSelectedTableId).append("\n");
+        }
+
         billText.append("Ngày: ").append(new SimpleDateFormat("dd/MM/yyyy HH:mm:ss").format(new Date())).append("\n");
         billText.append("------------------------------------------------\n");
         billText.append(String.format("%-25s %-5s %s\n", "Tên món", "SL", "Thành tiền"));
@@ -385,12 +531,11 @@ public class OrderPanel extends JPanel {
         billText.append("        CẢM ƠN QUÝ KHÁCH & HẸN GẶP LẠI!\n");
         billText.append("================================================\n");
 
-        // Tạo Popup Dialog hiển thị Bill
-        JDialog billDialog = new JDialog((Frame) SwingUtilities.getWindowAncestor(this), "Hóa Đơn Tạm Tính", true);
+        JDialog billDialog = new JDialog((Frame) SwingUtilities.getWindowAncestor(this), "Hóa Đơn Tạm", true);
         billDialog.setLayout(new BorderLayout());
 
         JTextArea txtArea = new JTextArea(billText.toString());
-        txtArea.setFont(new Font("Monospaced", Font.PLAIN, 14)); // Font chữ đánh máy chuẩn Bill
+        txtArea.setFont(new Font("Monospaced", Font.PLAIN, 14));
         txtArea.setEditable(false);
         txtArea.setMargin(new Insets(10, 10, 10, 10));
 
@@ -408,10 +553,10 @@ public class OrderPanel extends JPanel {
         billDialog.setVisible(true);
     }
 
-    // Lưu file TXT (Đáp ứng tiêu chí 9.6 trong PDF)
     private void exportBillToFile(String content) {
         JFileChooser fileChooser = new JFileChooser();
-        fileChooser.setSelectedFile(new java.io.File("HoaDon_Ban_" + currentSelectedTableId + ".txt"));
+        String fileName = (currentSelectedTableId == 0) ? "HoaDon_MangDi.txt" : "HoaDon_Ban_" + currentSelectedTableId + ".txt";
+        fileChooser.setSelectedFile(new java.io.File(fileName));
         if (fileChooser.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
             try (java.io.PrintWriter writer = new java.io.PrintWriter(new java.io.FileWriter(fileChooser.getSelectedFile()))) {
                 writer.print(content);
@@ -424,7 +569,7 @@ public class OrderPanel extends JPanel {
 
     private void processCheckout() {
         if (currentSelectedTableId == -1 || cartTableModel.getRowCount() == 0) {
-            JOptionPane.showMessageDialog(this, "Vui lòng chọn bàn và thêm món!", "Cảnh báo", JOptionPane.WARNING_MESSAGE);
+            JOptionPane.showMessageDialog(this, "Vui lòng chọn Bàn/Đơn và thêm món!", "Cảnh báo", JOptionPane.WARNING_MESSAGE);
             return;
         }
 
@@ -446,7 +591,7 @@ public class OrderPanel extends JPanel {
         order.setTableId(currentSelectedTableId);
         order.setUserId(1);
         order.setTotalPrice(BigDecimal.valueOf(total));
-        order.setStatus("Đã thanh toán");
+        order.setStatus("PAID");
         order.setCreatedAt(new Timestamp(System.currentTimeMillis()));
 
         Map<String, Object> mapData = new HashMap<>();
@@ -459,11 +604,25 @@ public class OrderPanel extends JPanel {
 
             if (res.isSuccess()) {
                 JOptionPane.showMessageDialog(this, "Thanh toán thành công!\nThu: " + (long)total + " VNĐ", "Thông báo", JOptionPane.INFORMATION_MESSAGE);
+
+                if (currentSelectedTableId == 0) {
+                    int selectedTakeawayIdx = listTakeaway.getSelectedIndex();
+                    if (selectedTakeawayIdx != -1) {
+                        takeawayListModel.remove(selectedTakeawayIdx);
+                    }
+                }
+
                 cartTableModel.setRowCount(0);
-                lblTotalAmount.setText("TỔNG TIỀN: 0 VNĐ");
+                updateTotalAmount();
                 lblHeader.setText("CHƯA CHỌN ĐƠN NÀO");
                 currentSelectedTableId = -1;
-                loadTablesFromServer(); // Cập nhật lại màu toàn bộ bàn
+                currentSelectedTakeaway = null;
+
+                isUpdatingSelection = true;
+                listTakeaway.clearSelection();
+                isUpdatingSelection = false;
+
+                loadTablesFromServer();
             } else {
                 JOptionPane.showMessageDialog(this, "Lỗi thanh toán: " + res.getMessage(), "Lỗi", JOptionPane.ERROR_MESSAGE);
             }
