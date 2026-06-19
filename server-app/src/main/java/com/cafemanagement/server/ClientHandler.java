@@ -44,8 +44,6 @@ public class ClientHandler implements Runnable {
         this.orderDAO = new OrderDAOImpl();
     }
 
-    // ... (các phần import và biến giữ nguyên) ...
-
     @Override
     public void run() {
         // ĐẢO NGƯỢC THỨ TỰ: TẠO OUTPUTSTREAM TRƯỚC, RỒI TẠO INPUTSTREAM
@@ -76,36 +74,67 @@ public class ClientHandler implements Runnable {
         }
     }
 
-// ... (hàm handleRequest và handleLogin giữ nguyên hoàn toàn) ...
-
     private Response handleRequest(Request request) {
         String action = request.getAction();
 
         switch (action) {
             case "LOGIN":
                 return handleLogin(request);
+
+            case "REGISTER":
+                @SuppressWarnings("unchecked")
+                Map<String, String> regData = (Map<String, String>) request.getData();
+                String regUsername = regData.get("username");
+                String regPlainPassword = regData.get("password");
+
+                // 1. Kiểm tra xem username đã có ai dùng chưa
+                if (userDAO.findByUsername(regUsername) != null) {
+                    return new Response(false, "Tên đăng nhập đã tồn tại! Vui lòng chọn tên khác.", null);
+                }
+
+                // 2. Băm mật khẩu bằng BCrypt
+                String hashedRegPassword = BCrypt.withDefaults().hashToString(12, regPlainPassword.toCharArray());
+
+                // 3. Tạo User mới, mặc định cấp quyền "staff" (Nhân viên)
+                User newUser = new User();
+                newUser.setUsername(regUsername);
+                newUser.setPassword(hashedRegPassword);
+                newUser.setRole("EMPLOYEE");
+
+                // 4. Lưu xuống Database
+                boolean registerSuccess = userDAO.add(newUser);
+                ServerLogger.getInstance().log(regUsername, "REGISTER", registerSuccess ? "SUCCESS" : "FAILED");
+
+                return new Response(registerSuccess, registerSuccess ? "Đăng ký thành công!" : "Lỗi hệ thống, không thể đăng ký!", null);
+
             case "PRODUCT_FIND_ALL":
                 return new Response(true, "Lấy danh sách sản phẩm thành công", productDAO.findAll());
+
             case "PRODUCT_CREATE":
                 Product productCreate = (Product) request.getData();
                 boolean createSuccess = productDAO.add(productCreate);
                 ServerLogger.getInstance().log("System", "PRODUCT_CREATE", createSuccess ? "SUCCESS" : "FAILED");
                 return new Response(createSuccess, createSuccess ? "Thêm sản phẩm thành công" : "Thêm sản phẩm thất bại", null);
+
             case "PRODUCT_UPDATE":
                 Product productUpdate = (Product) request.getData();
                 boolean updateSuccess = productDAO.update(productUpdate);
                 ServerLogger.getInstance().log("System", "PRODUCT_UPDATE", updateSuccess ? "SUCCESS" : "FAILED");
                 return new Response(updateSuccess, updateSuccess ? "Cập nhật sản phẩm thành công" : "Cập nhật sản phẩm thất bại", null);
+
             case "PRODUCT_DELETE":
                 int productId = (int) request.getData();
                 boolean deleteSuccess = productDAO.delete(productId);
                 ServerLogger.getInstance().log("System", "PRODUCT_DELETE", deleteSuccess ? "SUCCESS" : "FAILED");
                 return new Response(deleteSuccess, deleteSuccess ? "Xóa sản phẩm thành công" : "Xóa sản phẩm thất bại", null);
+
             case "PRODUCT_SEARCH":
                 String keyword = (String) request.getData();
                 return new Response(true, "Tìm kiếm sản phẩm thành công", productDAO.search(keyword));
+
             case "TABLE_GET_ALL":
                 return new Response(true, "Lấy danh sách bàn thành công", cafeTableDAO.findAll());
+
             case "ORDER_CREATE":
                 synchronized (orderLock) { // Đồng bộ khi nhiều client cùng tạo đơn
                     @SuppressWarnings("unchecked")
@@ -117,6 +146,7 @@ public class ClientHandler implements Runnable {
                     ServerLogger.getInstance().log("System", "ORDER_CREATE", orderSuccess ? "SUCCESS" : "FAILED");
                     return new Response(orderSuccess, orderSuccess ? "Tạo đơn hàng thành công" : "Tạo đơn hàng thất bại", null);
                 }
+
             case "PRODUCT_EXPORT":
                 try {
                     String filePath = (String) request.getData();
@@ -130,6 +160,7 @@ public class ClientHandler implements Runnable {
                     ServerLogger.getInstance().log("System", "PRODUCT_EXPORT", "FAILED");
                     return new Response(false, "Lỗi xuất file CSV: " + e.getMessage(), null);
                 }
+
             case "PRODUCT_IMPORT":
                 try {
                     String filePath = (String) request.getData();
@@ -145,19 +176,26 @@ public class ClientHandler implements Runnable {
                     ServerLogger.getInstance().log("System", "PRODUCT_IMPORT", "FAILED");
                     return new Response(false, "Lỗi nhập file CSV: " + e.getMessage(), null);
                 }
-            case "DASHBOARD_STATS":
-                try {
-                    Map<String, Object> stats = new HashMap<>();
-                    stats.put("total_revenue", orderDAO.getTotalRevenue());
-                    stats.put("total_orders", orderDAO.getTotalOrders());
-                    stats.put("top_products", orderDAO.getTopSellingProducts());
-                    return new Response(true, "Lấy thống kê thành công", stats);
-                } catch (Exception e) {
-                    e.printStackTrace();
-                    return new Response(false, "Lỗi lấy thống kê: " + e.getMessage(), null);
-                }
+
+                // Thay thế case DASHBOARD_STATS cũ bằng 3 case này
+            case "DASHBOARD_GET_INVOICES":
+                String dateFilter = (String) request.getData(); // Ví dụ: "2026-05-17"
+                return new Response(true, "Thành công", orderDAO.getOrdersByDate(dateFilter));
+
+            case "DASHBOARD_INVOICE_DETAILS":
+                int orderId = (int) request.getData();
+                return new Response(true, "Thành công", orderDAO.getOrderDetails(orderId));
+
+            case "DASHBOARD_CHART_STATS":
+                String period = (String) request.getData(); // Hứng bộ lọc từ giao diện
+                Map<String, Object> stats = new HashMap<>();
+                stats.put("chart_data", orderDAO.getRevenueByPeriod(period));
+                stats.put("top_products", orderDAO.getTopSellingProductsByPeriod(period));
+                return new Response(true, "Thành công", stats);
+
             case "USER_GET_ALL":
                 return new Response(true, "Lấy danh sách tài khoản thành công", userDAO.findAll());
+
             case "USER_CREATE":
                 User userCreate = (User) request.getData();
                 // Hash password
@@ -166,6 +204,7 @@ public class ClientHandler implements Runnable {
                 boolean userCreateSuccess = userDAO.add(userCreate);
                 ServerLogger.getInstance().log("System", "USER_CREATE", userCreateSuccess ? "SUCCESS" : "FAILED");
                 return new Response(userCreateSuccess, userCreateSuccess ? "Thêm tài khoản thành công" : "Thêm tài khoản thất bại", null);
+
             case "USER_UPDATE":
                 User userUpdate = (User) request.getData();
                 // Hash password
@@ -174,11 +213,13 @@ public class ClientHandler implements Runnable {
                 boolean userUpdateSuccess = userDAO.update(userUpdate);
                 ServerLogger.getInstance().log("System", "USER_UPDATE", userUpdateSuccess ? "SUCCESS" : "FAILED");
                 return new Response(userUpdateSuccess, userUpdateSuccess ? "Cập nhật tài khoản thành công" : "Cập nhật tài khoản thất bại", null);
+
             case "USER_DELETE":
                 int userId = (int) request.getData();
                 boolean userDeleteSuccess = userDAO.delete(userId);
                 ServerLogger.getInstance().log("System", "USER_DELETE", userDeleteSuccess ? "SUCCESS" : "FAILED");
                 return new Response(userDeleteSuccess, userDeleteSuccess ? "Xóa tài khoản thành công" : "Xóa tài khoản thất bại", null);
+
             default:
                 return new Response(false, "Unknown action: " + action, null);
         }
@@ -195,8 +236,8 @@ public class ClientHandler implements Runnable {
 
             if (user != null) {
                 // Kiểm tra mật khẩu plaintext hoặc BCrypt
-                boolean passwordMatch = password.equals(user.getPassword()) || 
-                                        BCrypt.verifyer().verify(password.toCharArray(), user.getPassword()).verified;
+                boolean passwordMatch = password.equals(user.getPassword()) ||
+                        BCrypt.verifyer().verify(password.toCharArray(), user.getPassword()).verified;
                 if (passwordMatch) {
                     Map<String, Object> userInfo = new HashMap<>();
                     userInfo.put("id", user.getId());

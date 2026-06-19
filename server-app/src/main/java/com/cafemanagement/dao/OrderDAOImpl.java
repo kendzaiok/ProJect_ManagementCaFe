@@ -162,22 +162,18 @@ public class OrderDAOImpl implements OrderDAO {
         return order;
     }
 
-    // ================= TÍNH NĂNG ĐÃ ĐƯỢC FIX LỖI =================
     @Override
     public boolean createOrder(Order order, List<OrderItem> items) {
         Connection conn = null;
         try {
             conn = DatabaseConnection.getInstance().getConnection();
 
-            // 0. Tạm thời tắt kiểm tra khóa ngoại (Lách luật Database)
             try (Statement stmt = conn.createStatement()) {
                 stmt.execute("SET FOREIGN_KEY_CHECKS=0");
             }
 
-            // 1. TẮT AUTO COMMIT ĐỂ BẮT ĐẦU TRANSACTION
             conn.setAutoCommit(false);
 
-            // 2. FIX: ĐÃ BỔ SUNG CỘT `created_at` VÀO LỆNH INSERT
             String orderSql = "INSERT INTO orders (table_id, user_id, total_price, status, created_at) VALUES (?, ?, ?, ?, ?)";
             try (PreparedStatement orderPstmt = conn.prepareStatement(orderSql, Statement.RETURN_GENERATED_KEYS)) {
                 orderPstmt.setInt(1, order.getTableId());
@@ -185,7 +181,6 @@ public class OrderDAOImpl implements OrderDAO {
                 orderPstmt.setBigDecimal(3, order.getTotalPrice());
                 orderPstmt.setString(4, "Đã thanh toán");
 
-                // Đẩy thời gian hiện tại xuống CSDL
                 if (order.getCreatedAt() != null) {
                     orderPstmt.setTimestamp(5, order.getCreatedAt());
                 } else {
@@ -199,7 +194,6 @@ public class OrderDAOImpl implements OrderDAO {
                     return false;
                 }
 
-                // Lấy ID hóa đơn tự động tăng
                 try (ResultSet rs = orderPstmt.getGeneratedKeys()) {
                     if (rs.next()) {
                         order.setId(rs.getInt(1));
@@ -210,7 +204,6 @@ public class OrderDAOImpl implements OrderDAO {
                 }
             }
 
-            // 3. Insert Chi Tiết Hóa Đơn (OrderItems) - Dùng Batch
             String itemSql = "INSERT INTO order_items (order_id, product_id, quantity, price) VALUES (?, ?, ?, ?)";
             try (PreparedStatement itemPstmt = conn.prepareStatement(itemSql)) {
                 for (OrderItem item : items) {
@@ -224,19 +217,16 @@ public class OrderDAOImpl implements OrderDAO {
                 itemPstmt.executeBatch();
             }
 
-            // 4. Chuyển trạng thái bàn thành 'AVAILABLE' (Chuẩn tiếng Anh trong DB)
             String updateTableSql = "UPDATE cafe_tables SET status = 'TRỐNG' WHERE id = ?";
             try (PreparedStatement updateTablePstmt = conn.prepareStatement(updateTableSql)) {
                 updateTablePstmt.setInt(1, order.getTableId());
                 updateTablePstmt.executeUpdate();
             }
 
-            // 5. NẾU KHÔNG CÓ LỖI NÀO -> COMMIT
             conn.commit();
             return true;
 
         } catch (SQLException e) {
-            // IN LỖI CHI TIẾT RA CONSOLE ĐỂ BẮT BỆNH NẾU DATABASE VẪN TỪ CHỐI
             System.err.println("=== 🚨 PHÁT HIỆN LỖI KHI LƯU DATABASE 🚨 ===");
             System.err.println("Lý do từ MySQL: " + e.getMessage());
             System.err.println("Mã lỗi SQL: " + e.getErrorCode());
@@ -251,7 +241,6 @@ public class OrderDAOImpl implements OrderDAO {
             }
             return false;
         } finally {
-            // Mở lại Auto Commit và Bật lại khóa ngoại cho hệ thống an toàn
             try {
                 if (conn != null) {
                     try (Statement stmt = conn.createStatement()) {
@@ -295,18 +284,109 @@ public class OrderDAOImpl implements OrderDAO {
         return 0;
     }
 
+    // =========================================================================
+    // CÁC HÀM NÂNG CẤP DÀNH CHO DASHBOARD (TÍCH HỢP BỘ LỌC THỜI GIAN)
+    // =========================================================================
+
     @Override
-    public List<Map<String, Object>> getTopSellingProducts() {
+    public List<Map<String, Object>> getOrderDetails(int orderId) {
+        List<Map<String, Object>> details = new ArrayList<>();
+        String sql = "SELECT p.name, oi.quantity, oi.price, (oi.quantity * oi.price) AS total " +
+                "FROM order_items oi JOIN products p ON oi.product_id = p.id " +
+                "WHERE oi.order_id = ?";
+        try (Connection conn = DatabaseConnection.getInstance().getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setInt(1, orderId);
+            ResultSet rs = pstmt.executeQuery();
+            while (rs.next()) {
+                Map<String, Object> row = new HashMap<>();
+                row.put("name", rs.getString("name"));
+                row.put("quantity", rs.getInt("quantity"));
+                row.put("price", rs.getBigDecimal("price"));
+                row.put("total", rs.getBigDecimal("total"));
+                details.add(row);
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return details;
+    }
+
+    @Override
+    public List<Order> getOrdersByDate(String dateString) {
+        List<Order> orders = new ArrayList<>();
+        String sql = "SELECT * FROM orders WHERE DATE(created_at) = ? ORDER BY created_at DESC";
+        try (Connection conn = DatabaseConnection.getInstance().getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, dateString);
+            ResultSet rs = pstmt.executeQuery();
+            while (rs.next()) {
+                orders.add(extractOrder(rs));
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return orders;
+    }
+
+    // Hàm phụ trợ: Tự động sinh câu lệnh điều kiện thời gian cho MySQL
+    private String getPeriodCondition(String period) {
+        if (period == null) return "DATE(created_at) >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)";
+        switch (period) {
+            case "Tuần này":
+                return "YEARWEEK(created_at, 1) = YEARWEEK(CURDATE(), 1)";
+            case "Tuần trước":
+                return "YEARWEEK(created_at, 1) = YEARWEEK(CURDATE() - INTERVAL 1 WEEK, 1)";
+            case "Tháng này":
+                return "YEAR(created_at) = YEAR(CURDATE()) AND MONTH(created_at) = MONTH(CURDATE())";
+            case "Tháng trước":
+                return "YEAR(created_at) = YEAR(CURDATE() - INTERVAL 1 MONTH) AND MONTH(created_at) = MONTH(CURDATE() - INTERVAL 1 MONTH)";
+            case "7 ngày gần nhất":
+            default:
+                return "DATE(created_at) >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)";
+        }
+    }
+
+    @Override
+    public List<Map<String, Object>> getRevenueByPeriod(String period) {
+        List<Map<String, Object>> chartData = new ArrayList<>();
+        String timeCondition = getPeriodCondition(period);
+
+        String sql = "SELECT DATE(created_at) as order_date, SUM(total_price) as daily_revenue " +
+                "FROM orders WHERE status = 'Đã thanh toán' AND " + timeCondition + " " +
+                "GROUP BY DATE(created_at) ORDER BY order_date DESC LIMIT 31";
+
+        try (Connection conn = DatabaseConnection.getInstance().getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(sql)) {
+            while (rs.next()) {
+                Map<String, Object> row = new HashMap<>();
+                row.put("date", rs.getDate("order_date").toString());
+                row.put("revenue", rs.getBigDecimal("daily_revenue"));
+                chartData.add(row);
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return chartData;
+    }
+
+    @Override
+    public List<Map<String, Object>> getTopSellingProductsByPeriod(String period) {
         List<Map<String, Object>> products = new ArrayList<>();
+        String timeCondition = getPeriodCondition(period);
+
         String sql = "SELECT p.name, SUM(oi.quantity) AS total_quantity, SUM(oi.quantity * oi.price) AS total_revenue " +
                 "FROM order_items oi " +
                 "JOIN products p ON oi.product_id = p.id " +
+                "JOIN orders o ON oi.order_id = o.id " +
+                "WHERE " + timeCondition + " " +
                 "GROUP BY p.id, p.name " +
-                "ORDER BY total_quantity DESC " +
-                "LIMIT 10";
+                "ORDER BY total_quantity DESC LIMIT 5";
+
         try (Connection conn = DatabaseConnection.getInstance().getConnection();
-             PreparedStatement pstmt = conn.prepareStatement(sql);
-             ResultSet rs = pstmt.executeQuery()) {
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(sql)) {
             while (rs.next()) {
                 Map<String, Object> product = new HashMap<>();
                 product.put("name", rs.getString("name"));

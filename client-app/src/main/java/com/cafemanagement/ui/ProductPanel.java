@@ -375,7 +375,7 @@ public class ProductPanel extends JPanel {
         JFileChooser fileChooser = new JFileChooser();
         fileChooser.setDialogTitle("Chọn đường dẫn lưu file CSV");
         fileChooser.setSelectedFile(new File("products.csv"));
-        fileChooser.setFileFilter(new FileNameExtensionFilter("CSV Files", "csv"));
+        fileChooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("CSV Files", "csv"));
         if (fileChooser.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
             File fileToSave = fileChooser.getSelectedFile();
             String filePath = fileToSave.getAbsolutePath();
@@ -385,7 +385,13 @@ public class ProductPanel extends JPanel {
             new SwingWorker<String, Void>() {
                 @Override
                 protected String doInBackground() throws Exception {
-                    try (BufferedWriter writer = new BufferedWriter(new FileWriter(finalFilePath))) {
+                    // FIX: Ép định dạng UTF-8 bằng OutputStreamWriter thay vì dùng FileWriter mặc định của hệ thống
+                    try (BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(
+                            new FileOutputStream(finalFilePath), java.nio.charset.StandardCharsets.UTF_8))) {
+
+                        // THÊM MÃ BOM (\uFEFF): Đây là "bùa chú" để ép Excel phải hiển thị đúng tiếng Việt có dấu
+                        writer.write('\ufeff');
+
                         writer.write("ID,Tên sản phẩm,Giá,Danh mục,Đường dẫn ảnh,Hiển thị POS");
                         writer.newLine();
                         for (Product product : currentProductList) {
@@ -409,7 +415,6 @@ public class ProductPanel extends JPanel {
             }.execute();
         }
     }
-
     private void importProducts() {
         JFileChooser fileChooser = new JFileChooser();
         fileChooser.setDialogTitle("Chọn file CSV để nhập");
